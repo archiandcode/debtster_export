@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -404,14 +405,43 @@ func (s *ActionService) runActionsExport(
 	}
 
 	rowIdx := 2
-	for _, a := range actions {
-		for colIdx, col := range cols {
-			cell, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx)
-			_ = f.SetCellValue(sheet, cell, col.Value(a))
-		}
-		rowIdx++
-	}
+	total := len(actions)
+	if total > 0 {
+		chunkSize := 1000
+		for i, a := range actions {
+			for colIdx, col := range cols {
+				cell, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx)
+				_ = f.SetCellValue(sheet, cell, col.Value(a))
+			}
+			rowIdx++
 
+			// update progress periodically
+			if (i+1)%chunkSize == 0 || i == total-1 {
+				raw := float64(i+1) / float64(total) * 100.0
+				progress := math.Round(raw)
+				// never report 100% here — reserve 100% for when file_url is ready
+				if progress >= 100 {
+					progress = 95
+				}
+
+				status.Progress = progress
+				_ = s.saveExportStatus(ctx, status)
+				_ = s.saveLaravelCache(ctx, status)
+
+				if s.ws != nil {
+					_ = s.ws.NotifyExportProgress(ctx, userID, exportID, progress, "generating")
+				}
+			}
+		}
+	} else {
+		for _, a := range actions {
+			for colIdx, col := range cols {
+				cell, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx)
+				_ = f.SetCellValue(sheet, cell, col.Value(a))
+			}
+			rowIdx++
+		}
+	}
 	buf, err := f.WriteToBuffer()
 	if err != nil {
 		return
