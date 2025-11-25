@@ -73,3 +73,24 @@ func (c *WebSocketClient) NotifyExportComplete(
 	c.hub.Broadcast(userID, message)
 	return nil
 }
+
+// NotifyExportFailed notifies a user that an export failed with the provided error message.
+func (c *WebSocketClient) NotifyExportFailed(ctx context.Context, userID int64, exportID string, errMsg string) error {
+	if c.hub == nil {
+		return nil
+	}
+
+	channel := fmt.Sprintf("notify_user_when_export_failed#%d", userID)
+	message := &ws.Message{
+		Type:    "export_failed",
+		Channel: channel,
+		Data: map[string]interface{}{
+			"id":      exportID,
+			"message": errMsg,
+			"user_id": userID,
+		},
+	}
+
+	c.hub.Broadcast(userID, message)
+	return nil
+}

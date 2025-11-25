@@ -179,6 +179,61 @@ func TestWebSocketClient_NilHub(t *testing.T) {
 	}
 }
 
+func TestWebSocketClient_NotifyExportFailed(t *testing.T) {
+	hub := ws.NewHub()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go hub.Run(ctx)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hub.HandleWebSocket(w, r, 1)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + server.URL[4:] + "?user_id=1"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	// Give time for registration
+	time.Sleep(50 * time.Millisecond)
+
+	client := NewWebSocketClient(hub)
+
+	err = client.NotifyExportFailed(context.Background(), 1, "export-123", "upload failed")
+	if err != nil {
+		t.Fatalf("Failed to notify failed: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	var received ws.Message
+	err = conn.ReadJSON(&received)
+	if err != nil {
+		t.Fatalf("Failed to read message: %v", err)
+	}
+
+	if received.Type != "export_failed" {
+		t.Errorf("Expected type 'export_failed', got '%s'", received.Type)
+	}
+	if received.Channel != "notify_user_when_export_failed#1" {
+		t.Errorf("Expected channel 'notify_user_when_export_failed#1', got '%s'", received.Channel)
+	}
+
+	dataBytes, _ := json.Marshal(received.Data)
+	var data map[string]interface{}
+	_ = json.Unmarshal(dataBytes, &data)
+
+	if data["id"] != "export-123" {
+		t.Errorf("Expected id 'export-123', got '%v'", data["id"])
+	}
+	if data["message"] != "upload failed" {
+		t.Errorf("Expected message 'upload failed', got '%v'", data["message"])
+	}
+}
+
 func TestWebSocketClient_MultipleProgressUpdates(t *testing.T) {
 	hub := ws.NewHub()
 	ctx, cancel := context.WithCancel(context.Background())

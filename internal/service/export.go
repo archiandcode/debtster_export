@@ -63,6 +63,7 @@ func (s *ExportService) GetExports(ctx context.Context, userID int64) ([]interfa
 			"user_id":    status.UserID,
 			"progress":   status.Progress,
 			"file_url":   status.FileURL,
+			"error":      status.Error,
 			"filters":    status.Filters,
 			"created_at": humanizeRuAgo(status.Created),
 		}
@@ -138,6 +139,7 @@ func (s *ExportService) GetExport(ctx context.Context, exportID string, userID i
 		"user_id":    status.UserID,
 		"progress":   status.Progress,
 		"file_url":   status.FileURL,
+		"error":      status.Error,
 		"filters":    status.Filters,
 		"created_at": humanizeRuAgo(status.Created),
 	}

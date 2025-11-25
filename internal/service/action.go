@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -292,6 +293,7 @@ func (s *ActionService) toCacheItem(st *ExportStatus) ExportCacheItem {
 		UserID:   st.UserID,
 		Progress: st.Progress,
 		FileURL:  st.FileURL,
+		Error:    st.Error,
 		Created:  created,
 	}
 }
@@ -428,9 +430,33 @@ func (s *ActionService) runActionsExport(
 		}
 
 		key, err := s.s3.UploadXLSX(ctx, fileName, data)
-		if err == nil {
+		if err != nil {
+			errStr := fmt.Sprintf("s3 upload failed: %v", err)
+			log.Printf("export %s: %s", exportID, errStr)
+			status.Error = &errStr
+			status.Progress = 100
+
+			_ = s.saveExportStatus(ctx, status)
+			_ = s.saveLaravelCache(ctx, status)
+
+			if s.ws != nil {
+				_ = s.ws.NotifyExportFailed(ctx, userID, exportID, errStr)
+			}
+		} else {
 			url, err2 := s.s3.GetTemporaryURL(ctx, key, 48*time.Hour)
-			if err2 == nil {
+			if err2 != nil {
+				errStr := fmt.Sprintf("s3 presign failed: %v", err2)
+				log.Printf("export %s: %s", exportID, errStr)
+				status.Error = &errStr
+				status.Progress = 100
+
+				_ = s.saveExportStatus(ctx, status)
+				_ = s.saveLaravelCache(ctx, status)
+
+				if s.ws != nil {
+					_ = s.ws.NotifyExportFailed(ctx, userID, exportID, errStr)
+				}
+			} else {
 				status.FileURL = &url
 				status.Progress = 100
 

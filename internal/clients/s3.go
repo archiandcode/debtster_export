@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -53,14 +54,36 @@ func (c *S3Client) UploadXLSX(ctx context.Context, fileName string, data []byte)
 	reader := bytes.NewReader(data)
 	size := int64(len(data))
 
-	_, err := c.raw.PutObject(ctx, c.bucket, key, reader, size, minio.PutObjectOptions{
-		ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-	})
-	if err != nil {
-		return "", fmt.Errorf("put object %q failed: %w", key, err)
+	// retry logic for transient failures
+	attempts := 3
+	backoff := 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		if _, err := c.raw.PutObject(ctx, c.bucket, key, reader, size, minio.PutObjectOptions{
+			ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		}); err != nil {
+			lastErr = err
+			log.Printf("s3: put object attempt %d/%d failed for key=%s: %v", attempt, attempts, key, err)
+			if attempt < attempts {
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(backoff):
+					backoff *= 2
+					continue
+				}
+			}
+		} else {
+			return key, nil
+		}
 	}
 
-	return key, nil
+	return "", fmt.Errorf("put object %q failed after %d attempts: %w", key, attempts, lastErr)
 }
 
 func (c *S3Client) GetTemporaryURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
@@ -68,10 +91,32 @@ func (c *S3Client) GetTemporaryURL(ctx context.Context, key string, ttl time.Dur
 		return "", fmt.Errorf("s3 client is nil")
 	}
 
-	u, err := c.raw.PresignedGetObject(ctx, c.bucket, key, ttl, nil)
-	if err != nil {
-		return "", fmt.Errorf("presign get object %q failed: %w", key, err)
+	// retries for presign (sometimes transient network errors or minio hiccups)
+	attempts := 3
+	backoff := 300 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		if u, err := c.raw.PresignedGetObject(ctx, c.bucket, key, ttl, nil); err != nil {
+			lastErr = err
+			log.Printf("s3: presign attempt %d/%d failed for key=%s: %v", attempt, attempts, key, err)
+			if attempt < attempts {
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(backoff):
+					backoff *= 2
+					continue
+				}
+			}
+		} else {
+			return u.String(), nil
+		}
 	}
 
-	return u.String(), nil
+	return "", fmt.Errorf("presign get object %q failed after %d attempts: %w", key, attempts, lastErr)
 }

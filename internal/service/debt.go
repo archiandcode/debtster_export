@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ type ExportStatus struct {
 	Filters  any       `json:"filters"`
 	Progress float64   `json:"progress"`
 	FileURL  *string   `json:"file_url"`
+	Error    *string   `json:"error,omitempty"`
 	Created  time.Time `json:"created_at"`
 }
 
@@ -41,6 +43,7 @@ type ExportCacheItem struct {
 	UserID   int64
 	Progress float64
 	FileURL  *string
+	Error    *string
 	Created  string
 }
 
@@ -270,6 +273,7 @@ func (s *DebtService) toCacheItem(st *ExportStatus) ExportCacheItem {
 		UserID:   st.UserID,
 		Progress: st.Progress,
 		FileURL:  st.FileURL,
+		Error:    st.Error,
 		Created:  created,
 	}
 }
@@ -280,7 +284,7 @@ func phpSerializeExportItem(item ExportCacheItem) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("a:7:{")
+	b.WriteString("a:8:{")
 
 	b.WriteString(phpStr("key"))
 	b.WriteString(phpStr(item.Key))
@@ -302,6 +306,13 @@ func phpSerializeExportItem(item ExportCacheItem) string {
 		b.WriteString("N;")
 	} else {
 		b.WriteString(phpStr(*item.FileURL))
+	}
+
+	b.WriteString(phpStr("error"))
+	if item.Error == nil || *item.Error == "" {
+		b.WriteString("N;")
+	} else {
+		b.WriteString(phpStr(*item.Error))
 	}
 
 	b.WriteString(phpStr("created_at"))
@@ -463,9 +474,34 @@ func (s *DebtService) runDebtsExport(
 		}
 
 		key, err := s.s3.UploadXLSX(ctx, fileName, data)
-		if err == nil {
+		if err != nil {
+			// upload failed even after retries
+			errStr := fmt.Sprintf("s3 upload failed: %v", err)
+			log.Printf("export %s: %s", exportID, errStr)
+			status.Error = &errStr
+			status.Progress = 100
+
+			_ = s.saveExportStatus(ctx, status)
+			_ = s.saveLaravelCache(ctx, status)
+
+			if s.ws != nil {
+				_ = s.ws.NotifyExportFailed(ctx, userID, exportID, errStr)
+			}
+		} else {
 			url, err2 := s.s3.GetTemporaryURL(ctx, key, 48*time.Hour)
-			if err2 == nil {
+			if err2 != nil {
+				errStr := fmt.Sprintf("s3 presign failed: %v", err2)
+				log.Printf("export %s: %s", exportID, errStr)
+				status.Error = &errStr
+				status.Progress = 100
+
+				_ = s.saveExportStatus(ctx, status)
+				_ = s.saveLaravelCache(ctx, status)
+
+				if s.ws != nil {
+					_ = s.ws.NotifyExportFailed(ctx, userID, exportID, errStr)
+				}
+			} else {
 				status.FileURL = &url
 				status.Progress = 100
 
