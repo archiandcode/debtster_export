@@ -25,21 +25,16 @@ type RedisConfig struct {
 	Prefix      string
 }
 
-type S3Config struct {
-	Endpoint        string
-	AccessKeyID     string
-	SecretAccessKey string
-	Bucket          string
-	UseSSL          bool
-	Region          string
-	Prefix          string
-}
-
 type AppConfig struct {
-	Port         string
-	Postgres     PostgresConfig
-	Redis        RedisConfig
-	S3           S3Config
+	Port     string
+	Postgres PostgresConfig
+	Redis    RedisConfig
+	// Local export storage directory (where generated files will be written)
+	ExportDir string
+	// Public URL prefix where files will be served (e.g. /files)
+	FilesPublicPrefix string
+	// ExternalURL — optional absolute URL used when generating file urls (e.g. https://example.com:8060)
+	ExternalURL  string
 	ExportPrefix string
 }
 
@@ -86,15 +81,9 @@ func Load() AppConfig {
 			Timeout:     mustAtoi(getenv("REDIS_TIMEOUT", "5")),
 			Prefix:      getenv("REDIS_PREFIX", "debtster_database"),
 		},
-		S3: S3Config{
-			Endpoint:        getenv("S3_ENDPOINT", "localhost:9000"),
-			AccessKeyID:     getenv("S3_ACCESS_KEY", "minio"),
-			SecretAccessKey: getenv("S3_SECRET_KEY", "minio123"),
-			Bucket:          getenv("S3_BUCKET", "exports"),
-			Region:          getenv("S3_REGION", "us-east-1"),
-			UseSSL:          mustBool(getenv("S3_USE_SSL", "false")),
-			Prefix:          getenv("S3_PREFIX", ""),
-		},
-		ExportPrefix: getenv("EXPORT_CACHE_PREFIX", "pkb_database_cache"),
+		ExportDir:         getenv("EXPORT_DIR", "./exports"),
+		FilesPublicPrefix: getenv("EXPORT_PUBLIC_PREFIX", "/files"),
+		ExternalURL:       getenv("EXTERNAL_URL", ""),
+		ExportPrefix:      getenv("EXPORT_CACHE_PREFIX", "pkb_database_cache"),
 	}
 }

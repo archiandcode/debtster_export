@@ -22,7 +22,7 @@ type UserRepository interface {
 type UserService struct {
 	repo        UserRepository
 	redis       *clients.RedisClient
-	s3          *clients.S3Client
+	s3          *clients.StorageClient
 	ws          *clients.WebSocketClient
 	cachePrefix string
 }
@@ -30,7 +30,7 @@ type UserService struct {
 func NewUserService(
 	repo UserRepository,
 	redis *clients.RedisClient,
-	s3 *clients.S3Client,
+	s3 *clients.StorageClient,
 	ws *clients.WebSocketClient,
 ) *UserService {
 	// тот же префикс, что и у DebtService
@@ -281,9 +281,9 @@ func (s *UserService) runUsersExport(
 			_ = s.ws.NotifyExportProgress(ctx, userID, exportID, 95, "uploading")
 		}
 
-		key, err := s.s3.UploadXLSX(ctx, fileName, data)
+		savedName, err := s.s3.Save(ctx, fileName, data)
 		if err != nil {
-			errStr := fmt.Sprintf("s3 upload failed: %v", err)
+			errStr := fmt.Sprintf("save export failed: %v", err)
 			log.Printf("export %s: %s", exportID, errStr)
 			status.Error = &errStr
 			status.Progress = 100
@@ -295,30 +295,16 @@ func (s *UserService) runUsersExport(
 				_ = s.ws.NotifyExportFailed(ctx, userID, exportID, errStr)
 			}
 		} else {
-			url, err2 := s.s3.GetTemporaryURL(ctx, key, 48*time.Hour)
-			if err2 != nil {
-				errStr := fmt.Sprintf("s3 presign failed: %v", err2)
-				log.Printf("export %s: %s", exportID, errStr)
-				status.Error = &errStr
-				status.Progress = 100
+			url := s.s3.GetURL(savedName)
+			status.FileURL = &url
+			status.Progress = 100
 
-				_ = s.saveExportStatus(ctx, status)
-				_ = s.saveLaravelCache(ctx, status)
+			_ = s.saveExportStatus(ctx, status)
+			_ = s.saveLaravelCache(ctx, status)
 
-				if s.ws != nil {
-					_ = s.ws.NotifyExportFailed(ctx, userID, exportID, errStr)
-				}
-			} else {
-				status.FileURL = &url
-				status.Progress = 100
-
-				_ = s.saveExportStatus(ctx, status)
-				_ = s.saveLaravelCache(ctx, status)
-
-				if s.ws != nil {
-					_ = s.ws.NotifyExportProgress(ctx, userID, exportID, 100, "ready")
-					_ = s.ws.NotifyExportComplete(ctx, userID, exportID, url, fileName)
-				}
+			if s.ws != nil {
+				_ = s.ws.NotifyExportProgress(ctx, userID, exportID, 100, "ready")
+				_ = s.ws.NotifyExportComplete(ctx, userID, exportID, url, fileName)
 			}
 		}
 	}

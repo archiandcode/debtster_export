@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +24,7 @@ import (
 	"debtster-export/internal/transport/websocket"
 	"debtster-export/pkg/database/postgres"
 
+	"github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 )
@@ -40,7 +45,11 @@ func main() {
 	redisClient := mustInitRedis(cfg.Redis)
 	defer redisClient.Close()
 
-	s3Client := mustInitS3(ctx, cfg.S3)
+	// Init local export storage
+	storageClient, err := clients.NewLocalStorage(cfg.ExportDir, cfg.FilesPublicPrefix, cfg.ExternalURL)
+	if err != nil {
+		log.Fatalf("storage init error: %v", err)
+	}
 
 	wsHub := websocket.NewHub()
 	go wsHub.Run(ctx)
@@ -51,9 +60,9 @@ func main() {
 	actionRepo := repository.NewActionRepository(db)
 	tokenRepo := repository.NewPersonalAccessTokenRepository(db)
 
-	debtSvc := service.NewDebtService(debtRepo, redisClient, s3Client, wsClient)
-	userSvc := service.NewUserService(userRepo, redisClient, s3Client, wsClient)
-	actionSvc := service.NewActionService(actionRepo, redisClient, s3Client, wsClient)
+	debtSvc := service.NewDebtService(debtRepo, redisClient, storageClient, wsClient)
+	userSvc := service.NewUserService(userRepo, redisClient, storageClient, wsClient)
+	actionSvc := service.NewActionService(actionRepo, redisClient, storageClient, wsClient)
 	exportSvc := service.NewExportService(redisClient, cfg.ExportPrefix)
 
 	sanctumMiddleware := auth.SanctumMiddleware(tokenRepo)
@@ -61,6 +70,36 @@ func main() {
 	handler := rest.NewHandler(debtSvc, userSvc, actionSvc, exportSvc)
 	router := handler.InitRouterWithAuth(sanctumMiddleware)
 
+	// create a public root router and mount protected (auth) router underneath so
+	// /files and /health remain public while other routes remain protected
+	root := chi.NewRouter()
+
+	// public: serve generated files
+	root.Get("/files/{file}", func(w http.ResponseWriter, r *http.Request) {
+		file := chi.URLParam(r, "file")
+		// sanitize and open file from storage directory
+		path := filepath.Join(storageClient.BaseDir, file)
+		// check file exists
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, "failed to access file", http.StatusInternalServerError)
+			return
+		}
+
+		// prefer original filename in Content-Disposition (strip random prefix)
+		orig := file
+		if idx := strings.IndexByte(file, '_'); idx >= 0 {
+			orig = file[idx+1:]
+		}
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", orig))
+
+		http.ServeFile(w, r, path)
+	})
+
+	// protected websocket endpoint
 	router.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
 		userID, err := auth.GetUserID(r.Context())
 		if err != nil {
@@ -96,7 +135,42 @@ func main() {
 		wsHub.HandleWebSocket(w, r, userID)
 	})
 
-	corsHandler := withCORS(router)
+	// expose endpoint for saving/uploading files (protected)
+	router.Post("/files/upload", func(w http.ResponseWriter, r *http.Request) {
+		// expect multipart form
+		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "file required", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		buf := new(bytes.Buffer)
+		if _, err := buf.ReadFrom(file); err != nil {
+			http.Error(w, "failed to read file", http.StatusInternalServerError)
+			return
+		}
+
+		saved, err := storageClient.Save(r.Context(), header.Filename, buf.Bytes())
+		if err != nil {
+			http.Error(w, "failed to save file", http.StatusInternalServerError)
+			return
+		}
+
+		url := storageClient.GetURL(saved)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"url":"%s","file":"%s"}`, url, saved)))
+	})
+
+	// mount protected router on root
+	root.Mount("/", router)
+
+	corsHandler := withCORS(root)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -115,6 +189,22 @@ func main() {
 			return
 		}
 		srvErr <- nil
+	}()
+
+	// start background cleaner that deletes files older than 30 minutes
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := storageClient.CleanupOlderThan(30 * time.Minute); err != nil {
+					log.Printf("storage cleanup error: %v", err)
+				}
+			}
+		}
 	}()
 
 	// Listen for OS shutdown signals
@@ -179,21 +269,7 @@ func mustInitRedis(cfg config.RedisConfig) *clients.RedisClient {
 	return client
 }
 
-func mustInitS3(ctx context.Context, cfg config.S3Config) *clients.S3Client {
-	client, err := clients.NewS3Client(ctx, clients.S3Config{
-		Endpoint:        cfg.Endpoint,
-		AccessKeyID:     cfg.AccessKeyID,
-		SecretAccessKey: cfg.SecretAccessKey,
-		Bucket:          cfg.Bucket,
-		UseSSL:          cfg.UseSSL,
-		Region:          cfg.Region,
-		Prefix:          cfg.Prefix,
-	})
-	if err != nil {
-		log.Fatalf("s3 init error: %v", err)
-	}
-	return client
-}
+// S3 removed — local storage used instead.
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
