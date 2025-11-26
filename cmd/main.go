@@ -193,16 +193,17 @@ func main() {
 		srvErr <- nil
 	}()
 
-	// start background cleaner that deletes files older than 30 minutes
+	// start background cleaner that deletes files older than 12 hours
+	// run checks every 6 hours
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(6 * time.Hour)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := storageClient.CleanupOlderThan(30 * time.Minute); err != nil {
+				if err := storageClient.CleanupOlderThan(12 * time.Hour); err != nil {
 					log.Printf("storage cleanup error: %v", err)
 				}
 			}
