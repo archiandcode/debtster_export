@@ -58,16 +58,18 @@ func main() {
 	debtRepo := repository.NewDebtRepository(db)
 	userRepo := repository.NewUserRepository(db)
 	actionRepo := repository.NewActionRepository(db)
+	paymentRepo := repository.NewPaymentRepository(db)
 	tokenRepo := repository.NewPersonalAccessTokenRepository(db)
 
 	debtSvc := service.NewDebtService(debtRepo, redisClient, storageClient, wsClient)
 	userSvc := service.NewUserService(userRepo, redisClient, storageClient, wsClient)
 	actionSvc := service.NewActionService(actionRepo, redisClient, storageClient, wsClient)
+	paymentSvc := service.NewPaymentService(paymentRepo, redisClient, storageClient, wsClient)
 	exportSvc := service.NewExportService(redisClient, cfg.ExportPrefix)
 
 	sanctumMiddleware := auth.SanctumMiddleware(tokenRepo)
 
-	handler := rest.NewHandler(debtSvc, userSvc, actionSvc, exportSvc)
+	handler := rest.NewHandler(debtSvc, userSvc, actionSvc, paymentSvc, exportSvc)
 	router := handler.InitRouterWithAuth(sanctumMiddleware)
 
 	// create a public root router and mount protected (auth) router underneath so

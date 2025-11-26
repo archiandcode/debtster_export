@@ -37,18 +37,24 @@ type UserExporter interface {
 	) (string, error)
 }
 
+type PaymentExporter interface {
+	StartPaymentsExport(ctx context.Context, selected []string, filter repository.PaymentsFilter, userID int64) (string, error)
+}
+
 type Handler struct {
 	debts      DebtExporter
 	users      UserExporter
 	actions    ActionExporter
+	payments   PaymentExporter
 	exportList ExportListService
 }
 
-func NewHandler(debts DebtExporter, users UserExporter, actions ActionExporter, exportList ExportListService) *Handler {
+func NewHandler(debts DebtExporter, users UserExporter, actions ActionExporter, payments PaymentExporter, exportList ExportListService) *Handler {
 	return &Handler{
 		debts:      debts,
 		users:      users,
 		actions:    actions,
+		payments:   payments,
 		exportList: exportList,
 	}
 }
@@ -82,6 +88,7 @@ func (h *Handler) InitRouterWithAuth(authMiddleware func(http.Handler) http.Hand
 		r.Post("/debts", h.exportDebts)
 		r.Post("/users", h.exportUsers)
 		r.Post("/actions", h.exportActions)
+		r.Post("/payments", h.exportPayments)
 	})
 
 	return r
